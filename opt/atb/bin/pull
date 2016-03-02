@@ -1,0 +1,227 @@
+#!/usr/bin/perl
+
+use File::Spec;
+use Cwd 'abs_path';
+use Carp 'confess';
+
+sub gitpull {
+	my ($parentdir, $giturl, $gitdir, $gitfile)=@_;
+
+	print STDERR "PARENT: ".$parentdir."\n";
+	print STDERR "  FILE: ".$gitfile."\n";
+	print STDERR "   DIR: ".$gitdir."\n";
+	print STDERR "   URL: ".$giturl."\n";
+
+	if ( -d $gitdir ) {
+		chdir($gitdir);
+		print STDERR "RUN:".$gitdir.":git pull\n";
+		open GIT, "git pull |";
+		while (my $line=<GIT>) {
+			print $line;
+		}
+		close GIT;
+	} else {
+		chdir($parentdir);
+		print STDERR "RUN:".$parentdir.":git clone ".$giturl." ".$gitdir."\n";
+		open GIT, "git clone ".$giturl." ".$gitdir." |";
+		while (my $line=<GIT>) {
+			print $line;
+		}
+		close GIT;
+	}
+	
+	if ( ! -f $gitfile) {
+		`mkdir -p $parentdir`;
+		open F, ">", $parentdir."/".$gitfile;
+		print F $giturl;
+		close F;
+	}
+}
+
+sub giturl {
+	my ($url)=@_;
+
+	print STDERR ":URL\n";
+
+	my $parentdir=$ENV{"HOME"}."/git";
+	my $gitdir;
+	my $giturl;
+	my $gitfile;
+
+	$giturl=$url;
+
+	#$parentdir=File::Spec->rel2abs( $parentdir, "/" );
+	$parentdir=abs_path($parentdir);
+
+	$gitfile = $url;
+	$gitfile =~ s@[/]\s*$@@;
+	$gitfile =~ s@[^/]*[/]@@g;
+
+	$gitdir = $gitfile;
+	$gitdir =~ s@[.]git$@@;
+	$gitdir = $parentdir."/".$gitdir;
+
+	return ($parentdir, $giturl, $gitdir, $gitfile);
+}
+
+sub gitdir{
+	my ($dir)=@_;
+
+	print STDERR ":DIR\n";
+
+	my $parentdir;
+	my $giturl;
+	my $gitdir;
+	my $gitfile;
+
+	#$gitdir=File::Spec->rel2abs( $dir, "/" );
+	$gitdir=abs_path($dir);
+
+	$parentdir = $gitdir;
+	$parentdir =~ s@[/]\s*$@@;
+	$parentdir =~ s@[/][^/]*$@@;
+
+	$gitfile=$gitdir;
+	$gitfile =~ s@[/]\s*$@@;
+	$gitfile =~ s@[^/]*[/]@@g;
+	$gitfile = $parentdir."/".$gitfile.".git";
+
+	chdir($gitdir);
+	open F, "git config --get remote.origin.url |";
+	while (my $line=<F>) {
+		chomp($line);
+		$giturl=$giturl.$line;
+	}
+	close F;
+
+	if ($giturl =~ m@^\s*$@) {
+		open F, "<", $gitfile;
+		while (my $line=<F>) {
+			chomp($line);
+			$giturl=$giturl.$line;
+		}
+		close F;
+	}
+
+	return ($parentdir, $giturl, $gitdir, $gitfile);
+}
+
+sub gitfile {
+	my ($file)=@_;
+
+	print STDERR ":FILE\n";
+
+	my $parentdir;
+	my $giturl;
+	my $gitdir;
+	my $gitfile;
+
+	#$gitfile=File::Spec->rel2abs( $file );
+	$gitfile=abs_path($file);
+
+	open F, "<", $gitfile;
+	while (my $line=<F>) {
+		chomp($line);
+		$giturl=$giturl.$line;
+	}
+	close F;
+
+	if ($giturl =~ m@^\s*$@) {
+		$gitdir=$gitfile;
+
+		chdir($gitdir);
+		open F, "git config --get remote.origin.url |";
+		while (my $line=<F>) {
+			chomp($line);
+			$giturl=$giturl.$line;
+		}
+		close F;
+	}
+
+	$parentdir = $gitfile;
+	$parentdir =~ s@[/]\s*$@@;
+	$parentdir =~ s@[/][^/]+$@@g;
+
+	$gitdir = $giturl;
+	$gitdir =~ s@[.]git\s*$@@;
+	$gitdir =~ s/^.*[@]//;
+	$gitdir =~ s@[/]\s*$@@;
+	$gitdir =~ s@[^/]*[/]@@g;
+	$gitdir = $parentdir."/".$gitdir;
+
+	return ($parentdir, $giturl, $gitdir, $gitfile);
+}
+
+sub parsearg {
+	my ($arg)=@_;
+
+	print STDERR "ARG:".$arg;
+
+	my $parentdir;
+	my $giturl;
+	my $gitdir;
+	my $gitfile;
+
+	if ( -f $arg && -r $arg ) {
+		$gitfile=$arg;
+		($parentdir, $giturl, $gitdir, $gitfile)=gitfile($gitfile);
+		return gitpull($parentdir, $giturl, $gitdir, $gitfile);
+	} elsif ( -f $ENV{"PWD"}."/".$arg && -r $ENV{"PWD"}."/".$arg ) {
+		$gitfile=$ENV{"PWD"}."/".$arg;
+		($parentdir, $giturl, $gitdir, $gitfile)=gitfile($gitfile);
+		return gitpull($parentdir, $giturl, $gitdir, $gitfile);
+	} elsif ( -f $ENV{"HOME"}."/git/".$arg && -r $ENV{"HOME"}."/git/".$arg ) {
+		$gitfile=$ENV{"HOME"}."/git/".$arg;
+		($parentdir, $giturl, $gitdir, $gitfile)=gitfile($gitfile);
+		return gitpull($parentdir, $giturl, $gitdir, $gitfile);
+	}
+
+	if ( -d $arg && -r $arg ) {
+		$gitdir=$arg;
+		($parentdir, $giturl, $gitdir, $gitfile)=gitdir($gitdir);
+		return gitpull($parentdir, $giturl, $gitdir, $gitfile);
+	} elsif ( -d $ENV{"PWD"}."/".$arg && -r $ENV{"PWD"}."/".$arg ) {
+		$gitdir=$ENV{"PWD"}."/".$arg;
+		($parentdir, $giturl, $gitdir, $gitfile)=gitdir($gitdir);
+		return gitpull($parentdir, $giturl, $gitdir, $gitfile);
+	} elsif ( -d $ENV{"HOME"}."/git/".$arg && -r $ENV{"HOME"}."/git/".$arg ) {
+		$gitdir=$ENV{"HOME"}."/git/".$arg;
+		($parentdir, $giturl, $gitdir, $gitfile)=gitdir($gitdir);
+		return gitpull($parentdir, $giturl, $gitdir, $gitfile);
+	}
+
+	if ( -f $arg.".git" && -r $arg.".git" ) {
+		$arg=$arg.".git";
+		$gitfile=$arg;
+		($parentdir, $giturl, $gitdir, $gitfile)=gitfile($gitfile);
+		return gitpull($parentdir, $giturl, $gitdir, $gitfile);
+	} elsif ( -f $ENV{"PWD"}."/".$arg.".git" && -r $ENV{"PWD"}."/".$arg.".git" ) {
+		$arg=$arg.".git";
+		$gitfile=$ENV{"PWD"}."/".$arg;
+		($parentdir, $giturl, $gitdir, $gitfile)=gitfile($gitfile);
+		return gitpull($parentdir, $giturl, $gitdir, $gitfile);
+	} elsif ( -f $ENV{"HOME"}."/git/".$arg.".git" && -r $ENV{"HOME"}."/git/".$arg.".git" ) {
+		$arg=$arg.".git";
+		$gitfile=$ENV{"HOME"}."/git/".$arg;
+		($parentdir, $giturl, $gitdir, $gitfile)=gitfile($gitfile);
+		return gitpull($parentdir, $giturl, $gitdir, $gitfile);
+	}
+
+	if ($arg =~ m@[/]@) {
+		($parentdir, $giturl, $gitdir, $gitfile)=giturl($arg);
+		return gitpull($parentdir, $giturl, $gitdir, $gitfile);
+	} else {
+		$arg='ssh://git@github.com/AtypicalBrandsLLC/'.$arg.'.git';
+		($parentdir, $giturl, $gitdir, $gitfile)=giturl($arg);
+		return gitpull($parentdir, $giturl, $gitdir, $gitfile);
+	}
+}
+
+sub parseargs {
+	my @args=@_;
+	foreach my $arg (@args) {
+		parsearg($arg);
+	}
+}
+
+parseargs(@ARGV);

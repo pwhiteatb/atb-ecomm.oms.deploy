@@ -1,0 +1,228 @@
+#!/bin/bash
+
+if [ -n "$1" ]; then
+	GIT="$1";
+else
+	echo "MUST SPECIFY A GIT REPOSITORY"
+	echo "Usage: $0 git-directory|git-url"
+	exit 1
+fi
+
+mkdir -p /opt/atb/bin
+cat <<EOF >/etc/profile.d/atbpath.sh
+#!/bin/sh
+export PATH="${PATH}:/opt/atb/bin:/usr/local/bin"
+EOF
+
+chmod 644 /etc/profile.d/atbpath.sh
+export PATH="${PATH}:/opt/atb/bin:/usr/local/bin"
+
+sudo yum update -y
+
+for yumpackage in nginx ruby-devel rubygems libffi-devel gcc-c++ git; do
+	yum install -y $yumpackage
+done
+
+for phppart in fpm mbstring pdo devel mysqlnd; do
+	yum install -y php56-$phppart
+done
+
+for rubygem in sass compass; do
+	( cd /opt/atb/bin ; gem install $rubygem ) 
+done
+
+if [ -d "/home/ec2-user/.ssh" ]; then
+	if [ -a "/opt/atb/bin/dist_rsa" ]; then
+		if [[ ! -a "${HOME}/.ssh/id_rsa" ]]; then
+			mkdir ${HOME}/.ssh
+			chmod 700 ${HOME}/.ssh
+			chown -R root:root ${HOME}/.ssh
+			mv /opt/atb/bin/dist_rsa ${HOME}/.ssh/id_rsa
+			chmod 600 ${HOME}/.ssh/id_rsa
+		fi
+	fi
+	if [ -a "/opt/atb/bin/dist_rsa.pub" ]; then
+		if [[ ! -a "${HOME}/.ssh/id_rsa.pub" ]]; then
+			mv /opt/atb/bin/dist_rsa.pub ${HOME}/.ssh/id_rsa.pub
+			mkdir ${HOME}/.ssh
+			chmod 700 ${HOME}/.ssh
+			chown -R root:root ${HOME}/.ssh
+			chmod 600 ${HOME}/.ssh/id_rsa.pub
+		fi
+	fi
+	if [ -a "/opt/atb/bin/dist_known" ]; then
+		mkdir ${HOME}/.ssh
+		chmod 700 ${HOME}/.ssh
+		chown -R root:root ${HOME}/.ssh
+		cat /opt/atb/bin/dist_known >> ${HOME}/.ssh/known_hosts
+		chmod 644 ${HOME}/.ssh/known_hosts
+	fi
+fi
+
+pull $GIT
+if [ $? -ne 0 ]; then
+	echo "Errors pulling git file/repo/dir: $GIT"
+	exit 1
+fi
+
+for repo in ${HOME}/git/*; do
+	if [ -d "$repo" ]; then
+		chmod 755 ${HOME}
+		chmod 755 ${HOME}/git
+		chmod 755 ${HOME}/git/$repo
+
+		if [ -a "$repo/composer.json" ]; then
+			#install PHP composer
+			if [[ ! -x "/opt/composer/bin/composer" ]]; then
+				if [[ ! -a "/opt/composer/bin/composer" ]]; then
+					mkdir ${HOME}/composer
+					cd ${HOME}/composer
+					php -r "readfile('https://getcomposer.org/installer');" > composer-setup.php
+					php composer-setup.php
+					php -r "unlink('composer-setup.php');"
+					mv composer.phar /opt/atb/bin/composer
+					rm -rf ${HOME}/composer
+				fi
+				chmod +x /opt/atb/bin/composer
+			fi
+
+			cd $repo
+			composer install
+			if [ $? -ne 0 ]; then
+				echo "Failed composer install in $repo"
+				exit 1
+			fi
+		fi
+
+		if [[ -a "$repo/package.json" || -a "$repo/gulpfile.js" ]]; then
+			#install node.js
+			if [[ ! -a "/opt/atb/bin/npm" ]]; then
+				mkdir ${HOME}/npm
+				cd ${HOME}/npm
+				wget https://nodejs.org/dist/v5.6.0/node-v5.6.0-linux-x64.tar.xz
+				tar xJvpf node-v5.6.0-linux-x64.tar.xz
+				tar -C node-*/ -cf - bin include lib share | tar -C /opt/atb -xf -
+				rm -rf ${HOME}/npm
+			fi
+		fi
+
+		if [ -a "$repo/package.json" ]; then
+			cd $repo
+			npm install
+			if [ $? -ne 0 ]; then
+				echo "Failed npm install in $repo"
+				exit 1
+			fi
+		fi
+
+		if [ -a "$repo/gulpfile.js" ]; then
+			#install gulp
+			if [[ ! -a "/opt/atb/bin/gulp" ]]; then
+				npm rm --global gulp
+				npm install --global gulp
+			fi
+
+			cd $repo
+			gulp
+			if [ $? -ne 0 ]; then
+				echo "Failed gulp in $repo"
+				exit 1
+			fi
+		fi
+
+		rm .env
+		cat <<EOF >>.env
+DB_CONNECTION=mysql
+DB_HOST=oms.cc3adu1f2ler.us-east-1.rds.amazonaws.com
+DB_PORT=3306
+DB_DATABASE=order_api
+DB_USERNAME=atbadmin
+DB_PASSWORD=Ch00Ch00
+
+ORDERS_QUEUE_PREFIX=https://sqs.us-east-1.amazonaws.com/223455957408/
+ORDERS_QUEUE_NAME=Order
+ORDERS_QUEUE_REGION=us-east-1
+ORDERS_QUEUE_KEY=AKIAJXKH6NCBCRQD2EOQ
+ORDERS_QUEUE_SECRET=TjOwOHqdrCzdP5fnvzJxWCAIaS0B1qPfPyZfbz9
+
+SHIPSTATION_STORE=74976
+SHIPSTATION_API_KEY=40562d6aa4614f40ac306de47d32302d
+SHIPSTATION_API_SECRET=78e340eb39684a62a3ad5ebdb2e1f3b0
+
+OMS_API_SERVICE_URL=http://54.175.193.96
+OMS_API_SERVICE_KEY=\$2y\$10\$21ZpklAsjFJkKFSdWjPVa.SqQPZOqACmbR26fZz7TSnBfbqvMypY2
+GOOGLE_OAUTH_CLIENT_ID=174734986373-i2cf552os2l0ui4hmfbk66h43h0k3kuv.apps.googleusercontent.com
+GOOGLE_OAUTH_CLIENT_SECRET=VIF83p_Rnn4W6aIq7oZ21FpX
+GOOGLE_OAUTH_CLIENT_REDIRECT_URL=http://admin.atypical-ecommerce-app.dev:8080/auth/social/callback/google
+EOF
+		cat .env.example >>.env
+
+		chmod -R 777 storage/ bootstrap/cache
+
+		if [ -d "$repo/public" ]; then
+			webroot="$repo/public"
+			chmod 755 $webroot
+			cat <<EOF >/etc/nginx/nginx.conf
+user  nginx;
+worker_processes  auto;
+error_log  $repo/error.log info;
+pid        $repo/nginx.pid;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    log_format  main  '\$remote_addr - \$remote_user [\$time_local] "\$request" '
+                      '\$status \$body_bytes_sent "\$http_referer" '
+                      '"\$http_user_agent" "\$http_x_forwarded_for"';
+
+    access_log  $repo/access.log  main;
+
+    sendfile            on;
+    tcp_nopush          on;
+    tcp_nodelay         on;
+    keepalive_timeout   65;
+    types_hash_max_size 2048;
+
+    upstream php-fpm {
+        server 127.0.0.1:9000;
+    }
+    include         /etc/nginx/mime.types;
+    default_type    application/octet-stream;
+
+    index   index.html index.htm;
+
+    server {
+        listen       80 default_server;
+        listen       [::]:80 default_server;
+        root         $webroot;
+
+        index index.php;
+
+        location / {
+                try_files \$uri \$uri/ /index.php?\$query_string;
+        }
+
+        location ~ \.php\$ {
+                try_files \$uri /index.php =404;
+                fastcgi_intercept_errors on;
+                fastcgi_split_path_info ^(.+\.php)(/.+)\$;
+                fastcgi_pass localhost:9000;
+                fastcgi_index index.php;
+                fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+                include fastcgi_params;
+        }
+    }
+}
+EOF
+			/etc/init.d/nginx start
+			/etc/init.d/php-fpm start
+			/etc/init.d/sshd start
+		fi
+	fi
+done
+
+while [ 1 ]; do
+	sleep 60
+done
